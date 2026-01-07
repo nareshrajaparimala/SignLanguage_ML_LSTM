@@ -1,0 +1,13 @@
+.hand-info {
+  background-color: #f0f0f0;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  padding: 10px;
+  margin-top: 10px;
+  font-size: 14px;
+}
+
+.hand-info p {
+  margin: 5px 0;
+  color: #333;
+}

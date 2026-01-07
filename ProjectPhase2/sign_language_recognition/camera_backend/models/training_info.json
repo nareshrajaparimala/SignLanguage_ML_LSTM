@@ -1,0 +1,19 @@
+{
+  "classes": [
+    "2",
+    "3",
+    "5",
+    "O",
+    "One",
+    "name"
+  ],
+  "num_samples": 32,
+  "num_classes": 6,
+  "input_shape": [
+    30,
+    148
+  ],
+  "final_accuracy": 0.5600000023841858,
+  "final_val_accuracy": 0.0,
+  "timestamp": "2025-12-01T10:49:48.060140"
+}

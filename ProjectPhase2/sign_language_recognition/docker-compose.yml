@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  backend:
+    build: 
+      context: ./camera_backend
+    ports:
+      - "5002:5002"
+    # IMPORTANT: To use the webcam on Windows Docker, you must configure usbipd-win
+    # and attach the webcam device to WSL2, which will map it to /dev/video0
+    devices:
+      - "/dev/video0:/dev/video0"
+    volumes:
+      - ./camera_backend:/app
+    environment:
+      - PYTHONUNBUFFERED=1
+    # Uncomment to give privileged access to USB devices if needed
+    # privileged: true
+
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      # Exclude node_modules from local volume override so we use the container's build
+      - /app/node_modules
+    environment:
+      # Tell Vite/React to proxy to the backend container named "backend"
+      - VITE_API_URL=http://backend:5002
+    depends_on:
+      - backend

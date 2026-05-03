@@ -25,6 +25,7 @@ MANIFEST
 
 # Virtual Environments
 venv/
+venv311/
 env/
 ENV/
 env.bak/
@@ -43,6 +44,7 @@ dist/
 .env.*.local
 
 # IDE
+.claude/
 .vscode/
 .idea/
 *.swp
@@ -68,6 +70,7 @@ dist/
 *.joblib
 *.npy
 *.npz
+*.task
 
 # Gesture Dataset (Large)
 gesture_dataset/

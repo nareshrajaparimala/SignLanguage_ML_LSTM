@@ -4,9 +4,6 @@ Advanced MediaPipe Hand Detection with Finger Bend Analysis and CNN+LSTM Model
 """
 
 import cv2
-import mediapipe as mp
-from mediapipe.tasks import python
-from mediapipe.tasks.python import vision
 import numpy as np
 import json
 import base64
@@ -16,12 +13,6 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import tensorflow as tf
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Dropout, Conv1D, MaxPooling1D, Flatten
-from tensorflow.keras.optimizers import Adam
-from sklearn.preprocessing import LabelEncoder
-from sklearn.utils.class_weight import compute_class_weight
 import joblib
 
 # Initialize FastAPI
@@ -35,19 +26,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize MediaPipe Tasks
-BaseOptions = mp.tasks.BaseOptions
-HandLandmarker = mp.tasks.vision.HandLandmarker
-HandLandmarkerOptions = mp.tasks.vision.HandLandmarkerOptions
-VisionRunningMode = mp.tasks.vision.RunningMode
-
 # Global variables
+mp = None
 detector = None
 camera = None
 last_timestamp_ms = 0
+solutions_hands = None
 
-DATASET_DIR = Path("gesture_dataset")
-MODEL_DIR = Path("models")
+BASE_DIR = Path(__file__).resolve().parent
+DATASET_DIR = BASE_DIR / "gesture_dataset"
+MODEL_DIR = BASE_DIR / "models"
 DATASET_DIR.mkdir(exist_ok=True)
 MODEL_DIR.mkdir(exist_ok=True)
 
@@ -58,6 +46,10 @@ capture_state = {
     "gesture_text": None,
     "frames": [],
     "target_frames": 30
+}
+legacy_buffer = {
+    "frames": [],
+    "frames_needed": 30
 }
 
 class GestureRequest(BaseModel):
@@ -205,126 +197,171 @@ def detect_finger_states(finger_angles):
 # Global variable to store previous landmarks for velocity calculation
 previous_landmarks = None
 
+def detect_hands(frame):
+    """Return hand landmarks and handedness from MediaPipe Tasks or Solutions."""
+    global mp, detector, solutions_hands, last_timestamp_ms
+
+    if mp is None:
+        import mediapipe as mediapipe_module
+        mp = mediapipe_module
+
+    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+    if detector is not None:
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+        timestamp_ms = int(datetime.now().timestamp() * 1000)
+        if timestamp_ms <= last_timestamp_ms:
+            timestamp_ms = last_timestamp_ms + 1
+        last_timestamp_ms = timestamp_ms
+
+        result = detector.detect_for_video(mp_image, timestamp_ms)
+        handedness = []
+        for hand_categories in result.handedness or []:
+            if hand_categories:
+                category = hand_categories[0]
+                handedness.append({
+                    "hand": category.category_name,
+                    "confidence": float(category.score)
+                })
+        return result.hand_landmarks or [], handedness
+
+    if solutions_hands is not None:
+        result = solutions_hands.process(rgb_frame)
+        landmarks = [hand.landmark for hand in result.multi_hand_landmarks or []]
+        handedness = []
+        for hand_categories in result.multi_handedness or []:
+            category = hand_categories.classification[0]
+            handedness.append({
+                "hand": category.label,
+                "confidence": float(category.score)
+            })
+        return landmarks, handedness
+
+    if detector is None and solutions_hands is None:
+        try:
+            from mediapipe.tasks import python as mp_python
+            from mediapipe.tasks.python import vision
+            import urllib.request
+            
+            model_path = MODEL_DIR / "hand_landmarker.task"
+            if not model_path.exists():
+                print("Downloading hand_landmarker.task model...")
+                url = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
+                urllib.request.urlretrieve(url, str(model_path))
+                print("Download complete.")
+                
+            base_options = mp_python.BaseOptions(model_asset_path=str(model_path))
+            options = vision.HandLandmarkerOptions(
+                base_options=base_options,
+                running_mode=vision.RunningMode.VIDEO,
+                num_hands=2,
+                min_hand_detection_confidence=0.5,
+                min_hand_presence_confidence=0.5,
+                min_tracking_confidence=0.5
+            )
+            detector = vision.HandLandmarker.create_from_options(options)
+            return detect_hands(frame)
+        except Exception as e:
+            print(f"Failed to initialize MediaPipe Tasks API: {e}")
+            try:
+                solutions_hands = mp.solutions.hands.Hands(
+                    static_image_mode=False,
+                    max_num_hands=2,
+                    min_detection_confidence=0.5,
+                    min_tracking_confidence=0.5
+                )
+                return detect_hands(frame)
+            except Exception as e2:
+                print(f"Failed to initialize MediaPipe Solutions API: {e2}")
+                return [], []
+    return detect_hands(frame)
+
+    return [], []
+
 def extract_comprehensive_features(frame):
     """Extract comprehensive features including landmarks, angles, rotation, velocity, and handedness"""
-    global previous_landmarks, detector, last_timestamp_ms
-    
-    if detector is None:
-        print("❌ Detector not initialized")
+    global previous_landmarks
+
+    hand_landmarks_list, detected_handedness = detect_hands(frame)
+    if not hand_landmarks_list:
         return [0.0] * 176, []
-    
-    height, width = frame.shape[:2]
-    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    
-    # Create MediaPipe Image
-    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
-    
-    # Calculate timestamp (simulated for video mode)
-    timestamp_ms = int(datetime.now().timestamp() * 1000)
-    if timestamp_ms <= last_timestamp_ms:
-        timestamp_ms = last_timestamp_ms + 1
-    last_timestamp_ms = timestamp_ms
-    
-    # Detect
-    detection_result = detector.detect_for_video(mp_image, timestamp_ms)
-    
+
     features = []
     handedness_info = []
-    
-    if detection_result.hand_landmarks:
-        # Use first hand for velocity calculation if available
-        current_landmarks = detection_result.hand_landmarks[0]
-        
-        for hand_idx, hand_landmarks in enumerate(detection_result.hand_landmarks):
-            # Get handedness information
-            handedness = "Unknown"
-            handedness_confidence = 0.0
-            
-            if detection_result.handedness and hand_idx < len(detection_result.handedness):
-                # Note: tasks API returns list of categories for each hand
-                category = detection_result.handedness[hand_idx][0]
-                handedness = category.category_name
-                handedness_confidence = category.score
-            
-            handedness_info.append({
-                "hand": handedness,
-                "confidence": handedness_confidence
-            })
-            
-            # Basic landmark coordinates (21 points * 3 = 63 features)
-            landmark_coords = []
-            for landmark in hand_landmarks:
-                landmark_coords.extend([landmark.x, landmark.y, landmark.z])
-            
-            # Calculate finger angles
-            finger_angles = calculate_finger_angles(hand_landmarks)
-            
-            # Detect finger states
-            finger_states = detect_finger_states(finger_angles)
-            
-            # Extract angle features (5 fingers)
-            angle_features = [finger_angles.get(finger, 0) for finger in ['thumb', 'index', 'middle', 'ring', 'pinky']]
-            
-            # Extract bend ratio features (5 fingers)
-            bend_features = [finger_states.get(finger, {}).get('bend_ratio', 0) for finger in ['thumb', 'index', 'middle', 'ring', 'pinky']]
-            
-            # Hand rotation features (NEW)
-            rotation_data = calculate_hand_rotation(hand_landmarks)
-            if rotation_data:
-                rotation_features = [
-                    rotation_data['roll'],
-                    rotation_data['pitch'],
-                    rotation_data['yaw']
-                ] + rotation_data['direction_vector'] + rotation_data['palm_normal']
-            else:
-                rotation_features = [0.0] * 9  # 3 rotations + 3 direction + 3 normal
-            
-            # Hand velocity features (NEW)
-            velocity_data = calculate_hand_velocity(current_landmarks, previous_landmarks)
-            if velocity_data:
-                velocity_features = [
-                    velocity_data['speed']
-                ] + velocity_data['velocity'] + velocity_data['direction']
-            else:
-                velocity_features = [0.0] * 7  # 1 speed + 3 velocity + 3 direction
-            
-            # Hand shape and angle features (NEW)
-            wrist = hand_landmarks[0]
-            middle_mcp = hand_landmarks[9]
-            index_tip = hand_landmarks[8]
-            thumb_tip = hand_landmarks[4]
-            
-            # Hand size
-            hand_size = math.sqrt((middle_mcp.x - wrist.x)**2 + (middle_mcp.y - wrist.y)**2)
-            
-            # Hand angle relative to camera (NEW)
-            hand_angle = math.atan2(middle_mcp.y - wrist.y, middle_mcp.x - wrist.x) * 180 / math.pi
-            
-            # Thumb-index distance (important for many gestures)
-            thumb_index_dist = math.sqrt((thumb_tip.x - index_tip.x)**2 + (thumb_tip.y - index_tip.y)**2)
-            
-            # Hand orientation angle (palm facing direction)
-            palm_angle = math.atan2(rotation_data['palm_normal'][1], rotation_data['palm_normal'][0]) * 180 / math.pi if rotation_data else 0
-            
-            # Wrist angle (important for orientation)
-            wrist_angle = math.atan2(wrist.y - middle_mcp.y, wrist.x - middle_mcp.x) * 180 / math.pi
-            
-            # Handedness features (NEW)
-            handedness_features = [
-                1.0 if handedness == "Left" else 0.0,  # Left hand indicator
-                1.0 if handedness == "Right" else 0.0,  # Right hand indicator
-                handedness_confidence  # Handedness confidence
-            ]
-            
-            shape_features = [hand_size, hand_angle, thumb_index_dist, palm_angle, wrist_angle]
-            
-            # Combine all features for this hand (85 + 3 = 88 features per hand)
-            hand_features = (landmark_coords + angle_features + bend_features + 
-                           rotation_features + velocity_features + shape_features + handedness_features)
-            features.extend(hand_features)
-        
-        # Store current landmarks for next frame
-        previous_landmarks = current_landmarks
+
+    # Use first hand for velocity calculation if available
+    current_landmarks = hand_landmarks_list[0]
+
+    for hand_idx, hand_landmarks in enumerate(hand_landmarks_list):
+        hand_info = detected_handedness[hand_idx] if hand_idx < len(detected_handedness) else {}
+        handedness = hand_info.get("hand", "Unknown")
+        handedness_confidence = hand_info.get("confidence", 0.0)
+
+        handedness_info.append({"hand": handedness, "confidence": handedness_confidence})
+
+        landmark_coords = []
+        for landmark in hand_landmarks:
+            landmark_coords.extend([landmark.x, landmark.y, landmark.z])
+
+        finger_angles = calculate_finger_angles(hand_landmarks)
+        finger_states = detect_finger_states(finger_angles)
+        fingers = ["thumb", "index", "middle", "ring", "pinky"]
+        angle_features = [finger_angles.get(finger, 0) for finger in fingers]
+        bend_features = [finger_states.get(finger, {}).get("bend_ratio", 0) for finger in fingers]
+
+        rotation_data = calculate_hand_rotation(hand_landmarks)
+        if rotation_data:
+            rotation_features = [
+                rotation_data["roll"],
+                rotation_data["pitch"],
+                rotation_data["yaw"],
+            ] + rotation_data["direction_vector"] + rotation_data["palm_normal"]
+        else:
+            rotation_features = [0.0] * 9
+
+        velocity_data = calculate_hand_velocity(current_landmarks, previous_landmarks)
+        if velocity_data:
+            velocity_features = [
+                velocity_data["speed"],
+            ] + velocity_data["velocity"] + velocity_data["direction"]
+        else:
+            velocity_features = [0.0] * 7
+
+        wrist = hand_landmarks[0]
+        middle_mcp = hand_landmarks[9]
+        index_tip = hand_landmarks[8]
+        thumb_tip = hand_landmarks[4]
+
+        hand_size = math.sqrt((middle_mcp.x - wrist.x)**2 + (middle_mcp.y - wrist.y)**2)
+        hand_angle = math.atan2(middle_mcp.y - wrist.y, middle_mcp.x - wrist.x) * 180 / math.pi
+        thumb_index_dist = math.sqrt((thumb_tip.x - index_tip.x)**2 + (thumb_tip.y - index_tip.y)**2)
+        palm_angle = (
+            math.atan2(rotation_data["palm_normal"][1], rotation_data["palm_normal"][0]) * 180 / math.pi
+            if rotation_data
+            else 0
+        )
+        wrist_angle = math.atan2(wrist.y - middle_mcp.y, wrist.x - middle_mcp.x) * 180 / math.pi
+
+        handedness_features = [
+            1.0 if handedness == "Left" else 0.0,
+            1.0 if handedness == "Right" else 0.0,
+            handedness_confidence,
+        ]
+
+        shape_features = [hand_size, hand_angle, thumb_index_dist, palm_angle, wrist_angle]
+        hand_features = (
+            landmark_coords
+            + angle_features
+            + bend_features
+            + rotation_features
+            + velocity_features
+            + shape_features
+            + handedness_features
+        )
+        features.extend(hand_features)
+
+    # Store current landmarks for next frame
+    previous_landmarks = current_landmarks
     
     # Pad or truncate to fixed size (2 hands * 88 features = 176)
     target_size = 176
@@ -336,6 +373,10 @@ def extract_comprehensive_features(frame):
 
 def create_cnn_lstm_model(input_shape, num_classes):
     """Create simplified CNN+LSTM model for small datasets"""
+    from tensorflow.keras.models import Sequential
+    from tensorflow.keras.layers import LSTM, Dense, Dropout, Conv1D, MaxPooling1D
+    from tensorflow.keras.optimizers import Adam
+
     model = Sequential([
         # Simplified CNN layers
         Conv1D(32, 3, activation='relu', input_shape=input_shape),
@@ -367,39 +408,24 @@ def create_cnn_lstm_model(input_shape, num_classes):
 
 @app.on_event("startup")
 async def startup_event():
-    global camera, detector
-    try:
-        # Initialize Camera
-        camera = cv2.VideoCapture(0)
-        if camera.isOpened():
-            camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-            camera.set(cv2.CAP_PROP_FPS, 30)
-            print("✅ Camera initialized successfully")
-        else:
-            print("⚠️ Warning: Camera not available")
-            
-        # Initialize Hand Landmarker
-        options = HandLandmarkerOptions(
-            base_options=BaseOptions(model_asset_path='models/hand_landmarker.task'),
-            running_mode=VisionRunningMode.VIDEO,
-            num_hands=2,
-            min_hand_detection_confidence=0.5,
-            min_hand_presence_confidence=0.5,
-            min_tracking_confidence=0.5)
-        detector = HandLandmarker.create_from_options(options)
-        print("✅ Hand Landmarker initialized successfully")
-            
-    except Exception as e:
-        print(f"❌ Initialization error: {e}")
-        camera = None
-        detector = None
+    global camera
+
+    camera = cv2.VideoCapture(0)
+    if camera.isOpened():
+        camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        camera.set(cv2.CAP_PROP_FPS, 30)
+        print("Camera initialized successfully")
+    else:
+        print("Warning: Camera not available")
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    global camera
+    global camera, solutions_hands
     if camera:
         camera.release()
+    if solutions_hands:
+        solutions_hands.close()
 
 @app.get("/")
 async def root():
@@ -407,7 +433,21 @@ async def root():
 
 @app.get("/api/status")
 async def api_status():
-    return {"status": "running", "message": "API is operational"}
+    trained_model_exists = (
+        (MODEL_DIR / "enhanced_gesture_model.h5").exists()
+        or (MODEL_DIR / "gesture_model.h5").exists()
+        or (MODEL_DIR / "cnn_lstm_model.h5").exists()
+    )
+    gestures = [d.name for d in DATASET_DIR.iterdir() if d.is_dir()]
+    return {
+        "status": "running",
+        "message": "API is operational",
+        "camera_connected": bool(camera and camera.isOpened()),
+        "detector_ready": bool(detector or solutions_hands),
+        "model_trained": trained_model_exists,
+        "gestures": gestures,
+        "dataset_path": str(DATASET_DIR),
+    }
 
 @app.get("/api/list-gestures")
 async def api_list_gestures():
@@ -420,6 +460,64 @@ async def api_start_gesture_capture(request: GestureRequest):
 @app.post("/api/capture-frame")
 async def api_capture_frame():
     return await capture_frame()
+
+@app.get("/api/capture-frame")
+async def api_preview_capture_frame():
+    """Compatibility endpoint for the original UI preview and Arduino pages."""
+    if not camera or not camera.isOpened():
+        return {
+            "frame": None,
+            "features": [0.0] * 176,
+            "camera_connected": False,
+            "message": "Camera not available"
+        }
+
+    ret, frame = camera.read()
+    if not ret:
+        raise HTTPException(status_code=500, detail="Failed to capture frame")
+
+    frame = cv2.flip(frame, 1)
+    features, handedness_info = extract_comprehensive_features(frame)
+    _, buffer = cv2.imencode(".jpg", frame)
+    frame_base64 = base64.b64encode(buffer).decode("utf-8")
+    return {
+        "frame": f"data:image/jpeg;base64,{frame_base64}",
+        "features": features,
+        "handedness": handedness_info,
+        "camera_connected": True
+    }
+
+@app.post("/api/buffer-frame")
+async def api_buffer_frame(frame: dict):
+    legacy_buffer["frames"].append(frame)
+    legacy_buffer["frames"] = legacy_buffer["frames"][-legacy_buffer["frames_needed"]:]
+    return {
+        "frames_collected": len(legacy_buffer["frames"]),
+        "frames_needed": legacy_buffer["frames_needed"]
+    }
+
+@app.get("/api/buffer-status")
+async def api_buffer_status():
+    return {
+        "frames_collected": len(legacy_buffer["frames"]),
+        "frames_needed": legacy_buffer["frames_needed"]
+    }
+
+@app.post("/api/save-label")
+async def api_save_label(label: str):
+    if not label.strip():
+        raise HTTPException(status_code=400, detail="Label is required")
+    gesture_dir = DATASET_DIR / label.strip()
+    gesture_dir.mkdir(exist_ok=True)
+    with open(gesture_dir / "text.txt", "w") as f:
+        f.write(label.strip())
+    legacy_buffer["frames"] = []
+    return {"message": "Label saved", "label": label.strip()}
+
+@app.get("/api/list-labels")
+async def api_list_labels():
+    labels = [gesture["name"] for gesture in (await list_gestures())["gestures"]]
+    return {"labels": labels}
 
 @app.post("/api/save-gesture")
 async def api_save_gesture():
@@ -434,7 +532,7 @@ async def api_predict_gesture(request: PredictionRequest):
     return await predict_gesture(request)
 
 @app.post("/api/predict-live")
-async def api_predict_live(request: PredictionRequest):
+async def api_predict_live(request: PredictionRequest = PredictionRequest()):
     return await predict_gesture(request)
 
 @app.get("/api/hand-detection")
@@ -518,39 +616,23 @@ async def get_finger_bend_data():
 @app.get("/hand-detection")
 async def get_hand_detection():
     """Get real-time hand detection with finger bend analysis"""
-    global camera, detector, last_timestamp_ms
+    global camera
     
     if not camera or not camera.isOpened():
         raise HTTPException(status_code=500, detail="Camera not available")
-    
-    if detector is None:
-        raise HTTPException(status_code=500, detail="Detector not initialized")
-    
+
     ret, frame = camera.read()
     if not ret:
         raise HTTPException(status_code=500, detail="Failed to capture frame")
     
     frame = cv2.flip(frame, 1)
     height, width = frame.shape[:2]
-    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    
-    # Create MediaPipe Image
-    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
-    
-    # Calculate timestamp
-    timestamp_ms = int(datetime.now().timestamp() * 1000)
-    if timestamp_ms <= last_timestamp_ms:
-        timestamp_ms = last_timestamp_ms + 1
-    last_timestamp_ms = timestamp_ms
-    
-    # Detect
-    detection_result = detector.detect_for_video(mp_image, timestamp_ms)
-    
+    hand_landmarks_list, detected_handedness = detect_hands(frame)
     annotated_frame = frame.copy()
     detailed_landmarks = []
     
-    if detection_result.hand_landmarks:
-        for idx, hand_landmarks in enumerate(detection_result.hand_landmarks):
+    if hand_landmarks_list:
+        for idx, hand_landmarks in enumerate(hand_landmarks_list):
             # Draw landmarks manually
             
             # Connections
@@ -591,13 +673,9 @@ async def get_hand_detection():
                 previous_landmarks if idx == 0 else None
             )
             
-            # Get handedness
-            handedness = "Unknown"
-            confidence = 0.0
-            if detection_result.handedness and idx < len(detection_result.handedness):
-                category = detection_result.handedness[idx][0]
-                handedness = category.category_name
-                confidence = category.score
+            hand_info = detected_handedness[idx] if idx < len(detected_handedness) else {}
+            handedness = hand_info.get("hand", "Unknown")
+            confidence = hand_info.get("confidence", 0.0)
             
             # Prepare landmark data
             landmarks_data = []
@@ -840,6 +918,7 @@ async def delete_gesture(gesture_name: str):
 
 @app.post("/train-model")
 @app.post("/api/train-model")
+@app.post("/api/train-advanced-model")
 async def train_model():
     """Train enhanced CNN+LSTM model with rotation and velocity features"""
     print("🚀 Starting enhanced model training...")
@@ -856,6 +935,8 @@ async def train_model():
             "message": f"Enhanced model trained successfully with {training_info['num_samples']} samples",
             "model_type": training_info["model_type"],
             "classes": training_info["classes"],
+            "gestures": training_info["classes"],
+            "num_gestures": len(training_info["classes"]),
             "samples": training_info["num_samples"],
             "accuracy": training_info["final_accuracy"],
             "val_accuracy": training_info["final_val_accuracy"],
@@ -875,13 +956,10 @@ async def train_model():
 @app.post("/predict-gesture")
 async def predict_gesture(request: PredictionRequest):
     """Predict gesture using enhanced model with rotation and velocity features"""
-    global camera, detector, last_timestamp_ms
+    global camera
     
     if not camera or not camera.isOpened():
         raise HTTPException(status_code=500, detail="Camera not available")
-        
-    if detector is None:
-        raise HTTPException(status_code=500, detail="Detector not initialized")
     
     # Check for hands in current frame first
     ret, test_frame = camera.read()
@@ -889,23 +967,13 @@ async def predict_gesture(request: PredictionRequest):
         raise HTTPException(status_code=500, detail="Failed to capture frame")
     
     test_frame = cv2.flip(test_frame, 1)
-    rgb_frame = cv2.cvtColor(test_frame, cv2.COLOR_BGR2RGB)
-    
-    # Create MediaPipe Image
-    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
-    
-    # Calculate timestamp
-    timestamp_ms = int(datetime.now().timestamp() * 1000)
-    if timestamp_ms <= last_timestamp_ms:
-        timestamp_ms = last_timestamp_ms + 1
-    last_timestamp_ms = timestamp_ms
-    
-    results = detector.detect_for_video(mp_image, timestamp_ms)
+    hand_landmarks_list, _ = detect_hands(test_frame)
     
     # Return "no hands" if no hands detected
-    if not results.hand_landmarks:
+    if not hand_landmarks_list:
         return {
             "gesture": "No hands detected",
+            "label": "No hands detected",
             "text": "",
             "confidence": 0.0,
             "all_predictions": {},
@@ -926,7 +994,11 @@ async def predict_gesture(request: PredictionRequest):
         label_encoder = joblib.load(enhanced_encoder_path)
         is_enhanced = True
     else:
+        import tensorflow as tf
+
         model_path = MODEL_DIR / "gesture_model.h5"
+        if not model_path.exists():
+            model_path = MODEL_DIR / "cnn_lstm_model.h5"
         encoder_path = MODEL_DIR / "label_encoder.joblib"
         if not model_path.exists() or not encoder_path.exists():
             raise HTTPException(status_code=400, detail="No trained model found")
@@ -944,16 +1016,9 @@ async def predict_gesture(request: PredictionRequest):
             continue
         
         frame = cv2.flip(frame, 1)
-        
-        # Check if hands are present in this frame
-        rgb_check = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        mp_check = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_check)
-        
-        # Increment timestamp for loop
-        last_timestamp_ms += 33 # approx 30fps
-        check_results = detector.detect_for_video(mp_check, last_timestamp_ms)
-        
-        if check_results.hand_landmarks:
+        frame_landmarks, _ = detect_hands(frame)
+
+        if frame_landmarks:
             hands_detected_count += 1
         
         features, _ = extract_comprehensive_features(frame)
@@ -963,6 +1028,7 @@ async def predict_gesture(request: PredictionRequest):
     if hands_detected_count < (request.frames * 0.7):
         return {
             "gesture": "Insufficient hand detection",
+            "label": "Insufficient hand detection",
             "text": "",
             "confidence": 0.0,
             "all_predictions": {},
@@ -988,6 +1054,7 @@ async def predict_gesture(request: PredictionRequest):
     if confidence < min_confidence:
         return {
             "gesture": "Low confidence",
+            "label": "Low confidence",
             "text": "",
             "confidence": confidence,
             "all_predictions": {
@@ -1009,6 +1076,7 @@ async def predict_gesture(request: PredictionRequest):
     
     return {
         "gesture": gesture_name,
+        "label": gesture_name,
         "text": gesture_text,
         "confidence": confidence,
         "all_predictions": {

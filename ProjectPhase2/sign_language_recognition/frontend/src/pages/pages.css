@@ -1,0 +1,291 @@
+/* Page-specific styles */
+
+.capture-page,
+.train-page,
+.predict-page {
+  animation: fadeIn 0.3s ease-in;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Containers */
+.train-container {
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+}
+
+/* Progress Section */
+.progress-section {
+  background: #f8f9fa;
+  padding: 1.5rem;
+  border-radius: 8px;
+}
+
+.progress-section h3 {
+  color: #667eea;
+  margin-bottom: 1rem;
+  font-size: 1.2rem;
+}
+
+.progress-bar {
+  background: #e0e0e0;
+  height: 30px;
+  border-radius: 15px;
+  overflow: hidden;
+  margin-bottom: 1rem;
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.progress-fill {
+  background: linear-gradient(90deg, #667eea, #764ba2);
+  height: 100%;
+  transition: width 0.3s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  font-weight: bold;
+  font-size: 0.9rem;
+}
+
+.progress-text {
+  text-align: center;
+  color: #666;
+  font-size: 0.9rem;
+}
+
+/* Controls */
+.controls {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.btn-large {
+  padding: 1rem 2rem;
+  font-size: 1.1rem;
+  border-radius: 8px;
+  font-weight: bold;
+}
+
+.form-group input[type="range"] {
+  width: 100%;
+  height: 6px;
+  cursor: pointer;
+}
+
+.help-text {
+  margin-top: 0.3rem;
+  font-size: 0.85rem;
+  color: #999;
+  text-align: right;
+}
+
+/* Save/Gesture sections */
+.save-section,
+.gestures-list,
+.train-controls {
+  background: #f8f9fa;
+  padding: 1.5rem;
+  border-radius: 8px;
+  border-left: 4px solid #667eea;
+}
+
+.save-section h3,
+.gestures-list h3,
+.train-controls h3 {
+  color: #667eea;
+  margin-bottom: 1rem;
+}
+
+.empty-text {
+  color: #999;
+  font-style: italic;
+  padding: 1rem;
+  text-align: center;
+}
+
+/* Gesture Tags */
+.gesture-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.gesture-tag {
+  display: inline-block;
+  background: #667eea;
+  color: white;
+  padding: 0.5rem 1rem;
+  border-radius: 20px;
+  font-size: 0.9rem;
+  font-weight: bold;
+}
+
+.gesture-tag.success {
+  background: #4caf50;
+}
+
+/* Status Messages */
+.status-message {
+  padding: 1rem;
+  border-radius: 8px;
+  background: #e3f2fd;
+  color: #1976d2;
+  border-left: 4px solid #1976d2;
+  font-weight: 500;
+}
+
+.status-message.success {
+  background: #e8f5e9;
+  color: #388e3c;
+  border-left-color: #388e3c;
+}
+
+/* Info Box */
+.info-box {
+  background: linear-gradient(135deg, rgba(102, 126, 234, 0.1), rgba(118, 75, 162, 0.1));
+  padding: 1.5rem;
+  border-radius: 8px;
+  border-left: 4px solid #667eea;
+  margin-top: 1rem;
+}
+
+.info-box h4 {
+  color: #667eea;
+  margin-bottom: 1rem;
+  font-size: 1.1rem;
+}
+
+.info-box ul {
+  list-style: none;
+  padding: 0;
+}
+
+.info-box li {
+  padding: 0.5rem 0;
+  padding-left: 1.5rem;
+  position: relative;
+  color: #555;
+  line-height: 1.6;
+}
+
+.info-box li:before {
+  content: "✓";
+  position: absolute;
+  left: 0;
+  color: #667eea;
+  font-weight: bold;
+}
+
+/* Success Box */
+.success-box {
+  background: linear-gradient(135deg, rgba(76, 175, 80, 0.1), rgba(56, 142, 60, 0.1));
+  padding: 1.5rem;
+  border-radius: 8px;
+  border-left: 4px solid #4caf50;
+}
+
+.success-box h3 {
+  color: #388e3c;
+  margin-bottom: 1rem;
+}
+
+.success-box p {
+  color: #555;
+  margin-bottom: 1rem;
+}
+
+/* Prediction Result */
+.prediction-result {
+  text-align: center;
+  animation: slideUp 0.5s ease;
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.result-card {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  padding: 2rem;
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(102, 126, 234, 0.4);
+  margin: 2rem 0;
+}
+
+.result-label {
+  font-size: 3rem;
+  font-weight: bold;
+  margin-bottom: 1rem;
+  letter-spacing: 2px;
+}
+
+.confidence-meter {
+  background: rgba(255, 255, 255, 0.2);
+  height: 30px;
+  border-radius: 15px;
+  overflow: hidden;
+  margin: 1rem 0;
+}
+
+.confidence-bar {
+  height: 100%;
+  transition: width 0.5s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  font-weight: bold;
+  font-size: 0.9rem;
+}
+
+.confidence-text {
+  font-size: 1.1rem;
+  font-weight: bold;
+  margin-top: 1rem;
+}
+
+/* Train Controls */
+.train-controls select {
+  cursor: pointer;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .result-label {
+    font-size: 2rem;
+  }
+
+  .btn-large {
+    padding: 0.8rem 1.5rem;
+    font-size: 1rem;
+  }
+
+  .gesture-tags {
+    gap: 0.3rem;
+  }
+
+  .gesture-tag {
+    padding: 0.4rem 0.8rem;
+    font-size: 0.8rem;
+  }
+}

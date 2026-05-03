@@ -1,4 +1,8 @@
 #!/bin/bash
-cd /Users/nareshraja/Desktop/code/ProjectPhase-2/ProjectPhase2/ProjectPhase2/sign_language_recognition/camera_backend
-source venv/bin/activate
+cd "$(dirname "$0")"
+if [ -d "venv311" ]; then
+  source venv311/bin/activate
+elif [ -d "venv" ]; then
+  source venv/bin/activate
+fi
 python3 advanced_mediapipe_server.py

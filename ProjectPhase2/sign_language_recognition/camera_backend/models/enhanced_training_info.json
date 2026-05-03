@@ -1,14 +1,16 @@
 {
   "model_type": "enhanced_cnn_lstm",
   "classes": [
+    "Hi bro",
+    "I am a boy",
     "one",
     "super"
   ],
-  "num_samples": 2,
-  "num_classes": 2,
+  "num_samples": 4,
+  "num_classes": 4,
   "sequence_length": 30,
   "feature_size": 176,
-  "final_accuracy": 1.0,
+  "final_accuracy": 0.8125,
   "final_val_accuracy": 0.0,
   "epochs_trained": 150,
   "features_included": [
